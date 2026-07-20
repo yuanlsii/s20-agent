@@ -16,8 +16,10 @@ from agent_runtime import AgentRuntime, DemoClient, build_runtime
 
 
 ROOT = Path(__file__).resolve().parent
-HOST = os.getenv("AGENT_HOST", "127.0.0.1")
-PORT = int(os.getenv("AGENT_PORT", "8765"))
+# Cloud platforms inject PORT and require listening on every network interface.
+# AGENT_* remains available for explicit local overrides.
+HOST = os.getenv("AGENT_HOST", "0.0.0.0")
+PORT = int(os.getenv("PORT", os.getenv("AGENT_PORT", "8765")))
 _runtime: AgentRuntime | None = None
 _runtime_error: str | None = None
 _runtime_lock = threading.Lock()

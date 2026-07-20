@@ -231,3 +231,22 @@ python -m pytest -q
 ```
 
 测试使用 mock model 和 mock HTTP provider，不需要真实 API key，也不会访问 Sub2API。
+
+## Zeabur 部署
+
+仓库根目录的 `Dockerfile` 会被 Zeabur 自动识别。容器默认以 `DEMO_MODE=1` 启动，监听平台注入的
+`PORT`，因此不配置 API key 也能先验证页面和 Session 基本功能。
+
+在 Zeabur 项目中选择 **Deploy New Service → GitHub**，部署 `yuanlsii/s20-agent`。部署成功后，
+在服务的 **Domains** 中选择 **Generate Domain**，生成 `*.zeabur.app` 公网地址。
+
+如需切换到真实 Sub2API，在服务的 **Variables** 中设置：
+
+```text
+DEMO_MODE=0
+SUB2API_BASE_URL=https://sub2api-yuanlsii.zeabur.app/v1
+SUB2API_API_KEY=<你的 API key>
+SUB2API_MODEL=<Sub2API 支持的模型名>
+```
+
+不要把真实 API key 写入 `Dockerfile`、README 或 Git 仓库。
