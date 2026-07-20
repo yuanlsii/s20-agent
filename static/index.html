@@ -23,6 +23,7 @@
       .message { max-width: 86%; padding: 11px 13px; border-radius: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
       .message.user { align-self: flex-end; background: #285c4b; }
       .message.assistant { align-self: flex-start; background: #252b36; }
+      .message.thinking { align-self: flex-start; background: #202733; color: #b9c4d4; font-size: 13px; border-left: 3px solid var(--accent); }
       .message.system { align-self: center; color: var(--muted); font-size: 13px; text-align: center; }
       .composer { display: flex; gap: 8px; padding: 13px 15px; border-top: 1px solid var(--line); }
       textarea, select, button { font: inherit; }
@@ -84,6 +85,8 @@
       const message = $('message');
       const send = $('send');
       let currentSession = '';
+      let thinkingNode = null;
+      let thinkingLines = [];
 
       function addMessage(kind, text) {
         const node = document.createElement('div');
@@ -91,10 +94,21 @@
         node.textContent = text;
         messages.appendChild(node);
         messages.scrollTop = messages.scrollHeight;
+        return node;
+      }
+
+      function addThinking(text) {
+        thinkingLines.push(text);
+        const content = `处理进度\n${thinkingLines.join('\n')}`;
+        thinkingNode = thinkingNode || addMessage('thinking', content);
+        thinkingNode.textContent = content;
+        messages.scrollTop = messages.scrollHeight;
       }
 
       function showEmptySession() {
         messages.replaceChildren();
+        thinkingNode = null;
+        thinkingLines = [];
         addMessage('system', '这是一个新会话。输入问题开始对话。');
       }
 
@@ -158,6 +172,8 @@
         try {
           const data = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}`);
           messages.replaceChildren();
+          thinkingNode = null;
+          thinkingLines = [];
           if (!data.session.messages.length) {
             showEmptySession();
             return;
@@ -193,17 +209,66 @@
         }
       }
 
+      async function streamChat(sessionId, text) {
+        const response = await fetch('/api/chat/stream', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({session_id: sessionId, message: text}),
+        });
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.error || `HTTP ${response.status}`);
+        }
+        if (!response.body) throw new Error('浏览器不支持流式响应');
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let answerNode = null;
+        let completed = null;
+        const consume = (block) => {
+          const line = block.split('\n').find((item) => item.startsWith('data: '));
+          if (!line) return;
+          const event = JSON.parse(line.slice(6));
+          if (event.type === 'progress') {
+            addThinking(event.message);
+          } else if (event.type === 'answer_delta') {
+            answerNode = answerNode || addMessage('assistant', '');
+            answerNode.textContent += event.delta;
+            messages.scrollTop = messages.scrollHeight;
+          } else if (event.type === 'done') {
+            completed = event.result;
+          } else if (event.type === 'error') {
+            throw new Error(event.error);
+          }
+        };
+
+        while (true) {
+          const {value, done} = await reader.read();
+          buffer += decoder.decode(value || new Uint8Array(), {stream: !done});
+          const blocks = buffer.split('\n\n');
+          buffer = blocks.pop();
+          for (const block of blocks) consume(block);
+          if (done) break;
+        }
+        if (buffer.trim()) consume(buffer);
+        if (!completed) throw new Error('流式响应未完成');
+        if (!answerNode) addMessage('assistant', completed.answer || '模型没有返回文本。');
+        return completed;
+      }
+
       composer.addEventListener('submit', async (event) => {
         event.preventDefault();
         const text = message.value.trim();
         if (!text || send.disabled || !currentSession) return;
         addMessage('user', text);
+        thinkingNode = null;
+        thinkingLines = [];
         message.value = '';
         send.disabled = true;
-        send.textContent = '运行中…';
+        send.textContent = '流式处理中…';
         try {
-          const data = await fetchJson('/api/chat', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({session_id: currentSession, message: text}) });
-          addMessage('assistant', data.answer);
+          await streamChat(currentSession, text);
           await refreshSessionList(currentSession);
         } catch (error) {
           addMessage('system', `错误：${error.message}`);

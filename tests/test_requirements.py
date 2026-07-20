@@ -74,6 +74,21 @@ class AgentRequirementsTests(unittest.TestCase):
         self.assertEqual(len(model.calls), 1)
         self.assertNotIn("tool_call", [event["kind"] for event in result["trace"]])
 
+    def test_progress_callback_emits_safe_status_and_final_answer(self):
+        model = ScriptedModel([ModelResponse(text="直接回答")])
+        events = []
+        with tempfile.TemporaryDirectory() as folder:
+            runtime = self.make_runtime(Path(folder), model)
+            result = runtime.run(
+                "stream",
+                "你好",
+                on_event=lambda kind, detail: events.append((kind, detail)),
+            )
+        self.assertEqual(result["answer"], "直接回答")
+        self.assertEqual(events[-1], ("answer", "直接回答"))
+        self.assertEqual([kind for kind, _ in events[:2]], ["status", "status"])
+        self.assertNotIn("reasoning", json.dumps(events, ensure_ascii=False))
+
     def test_loop_tool_call_then_final_answer(self):
         model = ScriptedModel(
             [

@@ -47,6 +47,11 @@ class ModelClient(Protocol):
     ) -> ModelResponse: ...
 
 
+# This callback carries user-safe progress labels, never the provider's hidden
+# reasoning text. The HTTP layer uses it to implement streaming updates.
+ProgressCallback = Callable[[str, str], None]
+
+
 @dataclass
 class TraceEvent:
     kind: str
@@ -372,10 +377,19 @@ class AgentRuntime:
         with self._locks_guard:
             return self._session_locks.setdefault(session_id, threading.Lock())
 
-    def run(self, session_id: str, user_text: str) -> dict[str, Any]:
+    def run(
+        self,
+        session_id: str,
+        user_text: str,
+        on_event: ProgressCallback | None = None,
+    ) -> dict[str, Any]:
         """Run one user turn; tool results re-enter the loop until final text exists."""
         if not user_text.strip():
             raise ValueError("message cannot be empty")
+
+        def emit(kind: str, detail: str) -> None:
+            if on_event is not None:
+                on_event(kind, detail)
 
         lock = self._lock_for(session_id)
         if not lock.acquire(blocking=False):
@@ -387,10 +401,12 @@ class AgentRuntime:
             session = self.sessions.load(session_id)
             session.messages.append({"role": "user", "content": user_text})
             trace.append(TraceEvent("user", user_text[:500]))
+            emit("status", "正在理解你的问题…")
 
             # Steps two–four repeat until the model returns text or max_steps is hit.
             for step in range(1, self.max_steps + 1):
                 trace.append(TraceEvent("model", f"step {step}"))
+                emit("status", "正在判断是直接回答，还是调用工具…")
                 messages = self.context.build_messages(session, self._system_prompt())
                 response = self.model.complete(messages, self.registry.schemas())
                 if response.reasoning:
@@ -399,6 +415,10 @@ class AgentRuntime:
                 if response.tool_calls:
                     # Step three: record the assistant's call, execute each tool, and
                     # append tool results before returning to the next model step.
+                    emit(
+                        "status",
+                        "正在调用工具：" + ", ".join(call.name for call in response.tool_calls),
+                    )
                     assistant: dict[str, Any] = {
                         "role": "assistant",
                         "content": response.text or None,
@@ -432,6 +452,7 @@ class AgentRuntime:
                                 "content": output,
                             }
                         )
+                    emit("status", "工具结果已返回，正在整理答案…")
                     self.sessions.save(session)
                     continue
 
@@ -439,6 +460,7 @@ class AgentRuntime:
                 answer = response.text.strip() or "模型没有返回文本。"
                 session.messages.append({"role": "assistant", "content": answer})
                 self.sessions.save(session)
+                emit("answer", answer)
                 return {
                     "session_id": session.id,
                     "answer": answer,

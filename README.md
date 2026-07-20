@@ -232,6 +232,18 @@ python -m pytest -q
 
 测试使用 mock model 和 mock HTTP provider，不需要真实 API key，也不会访问 Sub2API。
 
+## 流式交互
+
+浏览器发送 `POST /api/chat/stream` 后，服务端以 Server-Sent Events 返回：
+
+- `progress`：安全的高层处理进度，例如理解问题、判断工具、整理结果。
+- `answer_delta`：最终答案的增量片段。
+- `done`：本轮完整结果，结构与 `/api/chat` 一致。
+- `error`：本轮异常信息。
+
+provider 返回的 `reasoning_content` 只记录在 trace 中，不通过流式接口原样暴露；页面展示的是可读的处理进度，
+避免把模型内部隐藏推理当作用户可见事实。
+
 ## Zeabur 部署
 
 仓库根目录的 `Dockerfile` 会被 Zeabur 自动识别。容器默认以 `DEMO_MODE=1` 启动，监听平台注入的

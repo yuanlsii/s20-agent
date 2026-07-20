@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -46,6 +47,7 @@ def json_bytes(payload: dict[str, Any]) -> bytes:
 
 class AgentHandler(BaseHTTPRequestHandler):
     server_version = "S20Agent/0.1"
+    protocol_version = "HTTP/1.1"
 
     def _send(self, status: HTTPStatus, payload: bytes, content_type: str) -> None:
         self.send_response(status)
@@ -59,6 +61,55 @@ class AgentHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         self._send(status, json_bytes(payload), "application/json; charset=utf-8")
+
+    def _start_event_stream(self) -> None:
+        """Start a chunked SSE response so progress reaches the browser immediately."""
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+
+    def _write_event(self, event_type: str, **payload: Any) -> None:
+        """Write one JSON SSE event using HTTP/1.1 chunk framing."""
+        body = json.dumps({"type": event_type, **payload}, ensure_ascii=False)
+        data = f"data: {body}\n\n".encode("utf-8")
+        chunk = f"{len(data):X}\r\n".encode("ascii") + data + b"\r\n"
+        self.wfile.write(chunk)
+        self.wfile.flush()
+
+    def _finish_event_stream(self) -> None:
+        self.wfile.write(b"0\r\n\r\n")
+        self.wfile.flush()
+
+    def _stream_chat(self, runtime: AgentRuntime, session_id: str, message: str) -> None:
+        """Run the loop while forwarding safe progress and answer chunks as SSE."""
+        self._start_event_stream()
+        try:
+            def on_event(kind: str, detail: str) -> None:
+                if kind == "answer":
+                    # The provider adapter is intentionally non-streaming today. Chunk
+                    # the final text here so the UI still gets a progressive answer.
+                    for index in range(0, len(detail), 8):
+                        self._write_event("answer_delta", delta=detail[index : index + 8])
+                        time.sleep(0.015)
+                    return
+                self._write_event("progress", message=detail)
+
+            result = runtime.run(session_id, message, on_event=on_event)
+            self._write_event("done", result=result)
+        except Exception as exc:
+            try:
+                self._write_event("error", error=str(exc))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+        finally:
+            try:
+                self._finish_event_stream()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     def _read_json(self, allow_empty: bool = False) -> dict[str, Any]:
         """Read a small JSON request body and reject oversized or non-object payloads."""
@@ -148,7 +199,7 @@ class AgentHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
         path = urlparse(self.path).path
-        if path not in {"/api/chat", "/api/sessions"}:
+        if path not in {"/api/chat", "/api/chat/stream", "/api/sessions"}:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
 
@@ -182,6 +233,9 @@ class AgentHandler(BaseHTTPRequestHandler):
             data = self._read_json()
             message = str(data.get("message", ""))
             session_id = str(data.get("session_id") or f"session_{uuid.uuid4().hex[:12]}")
+            if path == "/api/chat/stream":
+                self._stream_chat(runtime, session_id, message)
+                return
             result = runtime.run(session_id, message)
             self._send_json(HTTPStatus.OK, result)
         except RuntimeError as exc:
