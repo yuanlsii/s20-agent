@@ -87,6 +87,9 @@ class AgentRequirementsTests(unittest.TestCase):
         self.assertEqual(result["answer"], "直接回答")
         self.assertEqual(events[-1], ("answer", "直接回答"))
         self.assertEqual([kind for kind, _ in events[:2]], ["status", "status"])
+        self.assertIn("你好", events[0][1])
+        self.assertIn("第 1 轮", events[1][1])
+        self.assertIn("生成答案（4 字）", events[-2][1])
         self.assertNotIn("reasoning", json.dumps(events, ensure_ascii=False))
 
     def test_loop_tool_call_then_final_answer(self):
@@ -100,8 +103,13 @@ class AgentRequirementsTests(unittest.TestCase):
                 ModelResponse(text="计算结果是 5"),
             ]
         )
+        events = []
         with tempfile.TemporaryDirectory() as folder:
-            result = self.make_runtime(Path(folder), model).run("s1", "算一下 2 + 3")
+            result = self.make_runtime(Path(folder), model).run(
+                "s1",
+                "算一下 2 + 3",
+                on_event=lambda kind, detail: events.append((kind, detail)),
+            )
         self.assertEqual(result["answer"], "计算结果是 5")
         self.assertEqual(len(model.calls), 2)
         offered_tools = {
@@ -111,6 +119,9 @@ class AgentRequirementsTests(unittest.TestCase):
         kinds = [event["kind"] for event in result["trace"]]
         self.assertEqual(kinds, ["user", "model", "reasoning", "tool_call", "tool_result", "model"])
         self.assertIn('"result": "5"', result["trace"][4]["detail"])
+        details = [detail for kind, detail in events if kind == "status"]
+        self.assertTrue(any("calculator" in detail and "2 + 3" in detail for detail in details))
+        self.assertTrue(any("calculator 返回" in detail and '"result": "5"' in detail for detail in details))
 
     def test_tool_registry_exposes_three_schemas_and_executes_mock_search(self):
         with tempfile.TemporaryDirectory() as folder:

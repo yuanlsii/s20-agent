@@ -25,6 +25,14 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def progress_preview(value: Any, limit: int = 180) -> str:
+    """Make dynamic progress details readable without dumping large tool payloads."""
+    if not isinstance(value, str):
+        value = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    compact = " ".join(value.split())
+    return compact if len(compact) <= limit else compact[: limit - 1] + "…"
+
+
 @dataclass
 class ToolCall:
     id: str
@@ -401,12 +409,12 @@ class AgentRuntime:
             session = self.sessions.load(session_id)
             session.messages.append({"role": "user", "content": user_text})
             trace.append(TraceEvent("user", user_text[:500]))
-            emit("status", "正在理解你的问题…")
+            emit("status", f"正在分析问题：「{progress_preview(user_text, 80)}」")
 
             # Steps two–four repeat until the model returns text or max_steps is hit.
             for step in range(1, self.max_steps + 1):
                 trace.append(TraceEvent("model", f"step {step}"))
-                emit("status", "正在判断是直接回答，还是调用工具…")
+                emit("status", f"第 {step} 轮：模型正在判断直接回答或调用工具")
                 messages = self.context.build_messages(session, self._system_prompt())
                 response = self.model.complete(messages, self.registry.schemas())
                 if response.reasoning:
@@ -417,7 +425,11 @@ class AgentRuntime:
                     # append tool results before returning to the next model step.
                     emit(
                         "status",
-                        "正在调用工具：" + ", ".join(call.name for call in response.tool_calls),
+                        f"第 {step} 轮：模型选择工具——"
+                        + ", ".join(
+                            f"{call.name}({progress_preview(call.arguments)})"
+                            for call in response.tool_calls
+                        ),
                     )
                     assistant: dict[str, Any] = {
                         "role": "assistant",
@@ -444,6 +456,7 @@ class AgentRuntime:
                         )
                         output = self.registry.execute(call)
                         trace.append(TraceEvent("tool_result", output[:1_000]))
+                        emit("status", f"{call.name} 返回：{progress_preview(output)}")
                         session.messages.append(
                             {
                                 "role": "tool",
@@ -452,7 +465,7 @@ class AgentRuntime:
                                 "content": output,
                             }
                         )
-                    emit("status", "工具结果已返回，正在整理答案…")
+                    emit("status", f"第 {step} 轮：工具执行完成，模型继续生成答案")
                     self.sessions.save(session)
                     continue
 
@@ -460,6 +473,7 @@ class AgentRuntime:
                 answer = response.text.strip() or "模型没有返回文本。"
                 session.messages.append({"role": "assistant", "content": answer})
                 self.sessions.save(session)
+                emit("status", f"第 {step} 轮：模型生成答案（{len(answer)} 字）")
                 emit("answer", answer)
                 return {
                     "session_id": session.id,
