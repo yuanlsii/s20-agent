@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>S20 Minimal Agent</title>
+    <style>
+      :root { color-scheme: dark; --bg: #111317; --panel: #1b1f27; --line: #303745; --text: #f4f6fb; --muted: #98a2b3; --accent: #65d3a2; --warn: #f5b95f; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; overflow: hidden; }
+      body { margin: 0; background: radial-gradient(circle at 10% 0%, #26354b 0, transparent 38%), var(--bg); color: var(--text); font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      main { width: min(1120px, 100%); height: 100dvh; margin: 0 auto; padding: 28px 18px 24px; display: flex; flex-direction: column; overflow: hidden; }
+      header { flex: 0 0 auto; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 22px; }
+      h1 { margin: 0 0 4px; font-size: clamp(26px, 4vw, 38px); letter-spacing: -0.03em; }
+      h2 { margin: 0; font-size: 16px; }
+      p { margin: 0; color: var(--muted); }
+      .badge { border: 1px solid var(--line); border-radius: 999px; padding: 7px 11px; color: var(--warn); white-space: nowrap; }
+      .badge.ready { color: var(--accent); border-color: #2b7259; }
+      .grid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(300px, .8fr); gap: 16px; align-items: start; overflow: hidden; }
+      .panel { background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 18px 60px #0004; }
+      .chat { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+      #messages { flex: 1; min-height: 0; padding: 22px 18px; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 12px; }
+      .message { max-width: 86%; padding: 11px 13px; border-radius: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .message.user { align-self: flex-end; background: #285c4b; }
+      .message.assistant { align-self: flex-start; background: #252b36; }
+      .message.system { align-self: center; color: var(--muted); font-size: 13px; text-align: center; }
+      .composer { display: flex; gap: 8px; padding: 13px 15px; border-top: 1px solid var(--line); }
+      textarea, select, button { font: inherit; }
+      textarea { min-height: 58px; max-height: 150px; resize: vertical; flex: 1; color: var(--text); background: #101319; border: 1px solid var(--line); border-radius: 10px; padding: 10px 11px; outline: none; }
+      textarea:focus { border-color: var(--accent); }
+      button { border: 0; border-radius: 10px; background: var(--accent); color: #082018; font-weight: 700; padding: 0 18px; cursor: pointer; }
+      button:hover:not(:disabled) { filter: brightness(1.08); }
+      button:disabled { opacity: .45; cursor: wait; }
+      #send { min-width: 72px; }
+      .sidebar { max-height: 100%; padding: 16px; overflow: hidden; }
+      .sidebar-section { min-width: 0; }
+      .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+      .secondary { height: 36px; padding: 0 12px; background: #252b36; color: var(--text); border: 1px solid var(--line); white-space: nowrap; }
+      #session-list { display: flex; flex-direction: column; gap: 6px; max-height: calc(100dvh - 205px); overflow-y: auto; overscroll-behavior: contain; }
+      .session-item { width: 100%; min-width: 0; padding: 9px 10px; background: #151922; color: var(--muted); border: 1px solid transparent; text-align: left; font-weight: 500; }
+      .session-item:hover { background: #202733; }
+      .session-item.active { background: #285c4b; border-color: #3b9678; color: var(--text); }
+      .session-preview { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .session-id { display: block; margin-top: 2px; color: #788496; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .session-item.active .session-id { color: #b8e8d7; }
+      @media (max-width: 760px) {
+        main { padding: 18px 12px 12px; }
+        header { flex-direction: column; margin-bottom: 12px; }
+        .grid { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
+        .chat { height: 100%; }
+        .sidebar { max-height: 190px; }
+        #session-list { max-height: 125px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div><h1>S20 Minimal Agent</h1><p>模型循环 + 工具调用 + 会话记忆，保持可读、可测、可替换。</p></div>
+        <div id="status" class="badge">连接中…</div>
+      </header>
+      <section class="grid">
+        <div class="panel chat">
+          <div id="messages" aria-live="polite"></div>
+          <form id="composer" class="composer">
+            <textarea id="message" aria-label="Message" placeholder="输入消息…" required></textarea>
+            <button id="send" type="submit">发送</button>
+          </form>
+        </div>
+        <aside class="panel sidebar">
+          <section class="sidebar-section">
+            <div class="section-heading"><h2>Sessions</h2><button id="new-session" class="secondary" type="button">＋ 新建会话</button></div>
+            <div id="session-list" role="list" aria-label="会话列表"></div>
+          </section>
+        </aside>
+      </section>
+    </main>
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const sessionList = $('session-list');
+      const newSessionButton = $('new-session');
+      const messages = $('messages');
+      const composer = $('composer');
+      const message = $('message');
+      const send = $('send');
+      let currentSession = '';
+
+      function addMessage(kind, text) {
+        const node = document.createElement('div');
+        node.className = `message ${kind}`;
+        node.textContent = text;
+        messages.appendChild(node);
+        messages.scrollTop = messages.scrollHeight;
+      }
+
+      function showEmptySession() {
+        messages.replaceChildren();
+        addMessage('system', '这是一个新会话。输入问题开始对话。');
+      }
+
+      async function fetchJson(url, options) {
+        const response = await fetch(url, options);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        return data;
+      }
+
+      function sessionLabel(item) {
+        return (item.preview || '新会话').replace(/\s+/g, ' ').slice(0, 36);
+      }
+
+      function markActiveSession() {
+        for (const item of sessionList.querySelectorAll('.session-item')) {
+          item.classList.toggle('active', item.dataset.sessionId === currentSession);
+        }
+      }
+
+      function renderSessionList(items) {
+        sessionList.replaceChildren();
+        for (const item of items) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'session-item';
+          button.dataset.sessionId = item.id;
+          button.setAttribute('aria-label', `切换会话 ${sessionLabel(item)}`);
+          const preview = document.createElement('span');
+          preview.className = 'session-preview';
+          preview.textContent = sessionLabel(item);
+          const id = document.createElement('span');
+          id.className = 'session-id';
+          id.textContent = item.id;
+          button.append(preview, id);
+          button.addEventListener('click', () => loadSession(item.id));
+          sessionList.appendChild(button);
+        }
+        markActiveSession();
+      }
+
+      async function refreshSessionList(preferredId = currentSession) {
+        const data = await fetchJson('/api/sessions');
+        renderSessionList(data.sessions);
+        if (!data.sessions.length) return '';
+        const remembered = localStorage.getItem('s20-session');
+        const available = new Set(data.sessions.map((item) => item.id));
+        const selected = available.has(preferredId) ? preferredId : (available.has(remembered) ? remembered : data.sessions[0].id);
+        currentSession = selected;
+        localStorage.setItem('s20-session', selected);
+        markActiveSession();
+        return selected;
+      }
+
+      async function loadSession(sessionId) {
+        currentSession = sessionId;
+        localStorage.setItem('s20-session', sessionId);
+        markActiveSession();
+        messages.replaceChildren();
+        addMessage('system', '正在加载会话…');
+        try {
+          const data = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}`);
+          messages.replaceChildren();
+          if (!data.session.messages.length) {
+            showEmptySession();
+            return;
+          }
+          for (const item of data.session.messages) addMessage(item.role, item.content);
+        } catch (error) {
+          messages.replaceChildren();
+          addMessage('system', `加载失败：${error.message}`);
+        }
+      }
+
+      async function createSession() {
+        newSessionButton.disabled = true;
+        try {
+          const data = await fetchJson('/api/sessions', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}' });
+          await refreshSessionList(data.session.id);
+          await loadSession(data.session.id);
+        } catch (error) {
+          addMessage('system', `新建失败：${error.message}`);
+        } finally {
+          newSessionButton.disabled = false;
+          message.focus();
+        }
+      }
+
+      async function refreshHealth() {
+        try {
+          const data = await fetchJson('/api/health');
+          $('status').textContent = data.configured ? (data.demo_mode ? 'Demo ready' : 'Sub2API ready') : '等待配置 API key';
+          $('status').classList.toggle('ready', data.configured);
+        } catch (error) {
+          $('status').textContent = '服务不可用';
+        }
+      }
+
+      composer.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const text = message.value.trim();
+        if (!text || send.disabled || !currentSession) return;
+        addMessage('user', text);
+        message.value = '';
+        send.disabled = true;
+        send.textContent = '运行中…';
+        try {
+          const data = await fetchJson('/api/chat', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({session_id: currentSession, message: text}) });
+          addMessage('assistant', data.answer);
+          await refreshSessionList(currentSession);
+        } catch (error) {
+          addMessage('system', `错误：${error.message}`);
+        } finally {
+          send.disabled = false;
+          send.textContent = '发送';
+          message.focus();
+        }
+      });
+
+      newSessionButton.addEventListener('click', createSession);
+      async function initialize() {
+        await refreshHealth();
+        try {
+          const selected = await refreshSessionList();
+          if (selected) await loadSession(selected);
+          else await createSession();
+        } catch (error) {
+          addMessage('system', `初始化失败：${error.message}`);
+        }
+      }
+      initialize();
+    </script>
+  </body>
+</html>
